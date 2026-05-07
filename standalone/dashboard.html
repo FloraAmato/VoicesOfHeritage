@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VoH — Voices of Heritage (Standalone Demo)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/recharts@2.13.0/umd/Recharts.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .card { @apply rounded-xl border border-slate-200 bg-white shadow-sm p-4; }
+  .nav-link { display:flex; align-items:center; gap:0.5rem; padding:0.5rem 0.75rem; border-radius:0.375rem; font-size:0.875rem; color:#334155; cursor:pointer; }
+  .nav-link:hover { background:#f1f5f9; }
+  .nav-link-active { background:#0f172a !important; color:white !important; }
+  @media print { .no-print { display: none !important; } .print-page { page-break-after: always; } }
+</style>
+<script>
+  tailwind.config = {
+    theme: { extend: { colors: { sev: {
+      ottimale:'#16a34a', accettabile:'#84cc16', attenzione:'#f59e0b', critico:'#dc2626'
+    }}}}
+  };
+</script>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+// ==========================================================================
+// VoH — Voices of Heritage — Standalone Demo
+// CeRICT — Conservatorio di Benevento — Task 4.2.2 / 4.2.3
+// Architettura predittiva derivata da EFAISTOS (Polo P.R.I.D.E.).
+// Sensore artunified multiparametrico. Dati simulati in-browser.
+// ==========================================================================
+
+const { useEffect, useMemo, useState, useRef } = React;
+const RC = window.Recharts;
+const {
+  ResponsiveContainer, LineChart, Line, ComposedChart, AreaChart, Area,
+  RadarChart, Radar, PolarAngleAxis, PolarGrid, PolarRadiusAxis,
+  ScatterChart, Scatter, ZAxis, ReferenceArea, CartesianGrid, XAxis, YAxis,
+  Tooltip, Legend
+} = RC;
+
+// ---------------------------------------------------------------------------
+// COSTANTI DI DOMINIO (D4.2.2.2 — Tab. 1, 3)
+// ---------------------------------------------------------------------------
+const ENV_TYPES = {
+  ARMADIO: "armadio_chiuso",
+  BIBLIO:  "biblioteca_consultazione",
+  DEPOSITO:"deposito_sotterraneo",
+  SALA:    "sala_storica_pt_soppalco",
+};
+
+// Tabella 3 — matrice pesi ambiente-dipendente
+const WEIGHTS = {
+  [ENV_TYPES.ARMADIO]:  { T_media_24h:0.4, RH_media_30gg:0.5, dT_24h:0.3, dRH_24h:0.4, illuminamento:0.1, PM_VOC:0.9, gradiente_verticale_T:0.1, rischio_muffa_LIM:0.6, rischio_insetti:0.7 },
+  [ENV_TYPES.BIBLIO]:   { T_media_24h:0.6, RH_media_30gg:0.7, dT_24h:0.7, dRH_24h:0.8, illuminamento:1.0, PM_VOC:0.6, gradiente_verticale_T:0.3, rischio_muffa_LIM:0.5, rischio_insetti:0.5 },
+  [ENV_TYPES.DEPOSITO]: { T_media_24h:0.3, RH_media_30gg:0.9, dT_24h:0.2, dRH_24h:0.3, illuminamento:0.1, PM_VOC:0.5, gradiente_verticale_T:0.2, rischio_muffa_LIM:1.0, rischio_insetti:0.9 },
+  [ENV_TYPES.SALA]:     { T_media_24h:0.8, RH_media_30gg:0.8, dT_24h:0.9, dRH_24h:1.0, illuminamento:0.9, PM_VOC:0.7, gradiente_verticale_T:1.0, rischio_muffa_LIM:0.7, rischio_insetti:0.8 },
+};
+const WEIGHT_VARS = Object.keys(WEIGHTS[ENV_TYPES.ARMADIO]);
+
+// Tabella 1 — soglie ambientali (4 livelli)
+const THRESH = {
+  T:    { ottimale:[16,20], accettabile:[14,22], attenzione:[10,25] },
+  RH:   { ottimale:[45,55], accettabile:[40,60], attenzione:[35,65] },
+  dT_24h: { ottimale:[0,1.5], accettabile:[0,2.5], attenzione:[0,4.0] },
+  dRH_24h:{ ottimale:[0,5], accettabile:[0,8], attenzione:[0,12] },
+  lux:  { ottimale:[0,50], accettabile:[0,150], attenzione:[0,300] },
+  UV:   { ottimale:[0,30], accettabile:[0,75], attenzione:[0,150] },
+  PM10: { ottimale:[0,20], accettabile:[0,40], attenzione:[0,75] },
+  VOC:  { ottimale:[0,200], accettabile:[0,500], attenzione:[0,1000] },
+};
+
+const RI_TH = {
+  RI_Chimico:{att:40,crit:60}, RI_Meccanico:{att:1,crit:2},
+  RI_Insetti:{att:35,crit:50}, RI_Muffa:{att:3,crit:5},
+  RI_Fotodeterioramento:{att:40,crit:80}, RI_Totale:{att:35,crit:50},
+};
+const RI_COEFS = { RI_Chimico:0.50, RI_Meccanico:0.10, RI_Insetti:0.25, RI_Muffa:0.15 };
+
+const SEV_HEX = { ottimale:"#16a34a", accettabile:"#84cc16", attenzione:"#f59e0b", critico:"#dc2626" };
+
+// ---------------------------------------------------------------------------
+// SEED — 4 ambienti + 8 manoscritti
+// ---------------------------------------------------------------------------
+const ENVIRONMENTS = [
+  { id:"ENV-ARM-01", nome:"Armadio climatizzato — Sala A", tipo:ENV_TYPES.ARMADIO,  inerzia:"alta" },
+  { id:"ENV-BIB-01", nome:"Biblioteca di consultazione",   tipo:ENV_TYPES.BIBLIO,   inerzia:"media" },
+  { id:"ENV-DEP-01", nome:"Deposito sotterraneo — Cripta", tipo:ENV_TYPES.DEPOSITO, inerzia:"alta" },
+  { id:"ENV-SAL-01", nome:"Sala storica P.T. + Soppalco",  tipo:ENV_TYPES.SALA,     inerzia:"bassa" },
+];
+
+const MANUSCRIPTS = [
+  { id:"MS-5463", nome:"Codex Beneventanus — Vat. lat. 5463", tipologia:"pergamena", pH:6.2, DP0:1100, ferroGallico:true, fotosensibili:false, legatura:"restaurato", deformazioni:1, fragilita:1, alterazioni:1, frequenza:"rara", ambienteId:"ENV-ARM-01", quota:"piano_terra", paretEsterna:false, sole:false },
+  { id:"MS-0428", nome:"Virgili Beneventani — frammento Aen.", tipologia:"pergamena", pH:5.8, DP0:950, ferroGallico:true, fotosensibili:true, legatura:"fragile", deformazioni:2, fragilita:2, alterazioni:2, frequenza:"rara", ambienteId:"ENV-ARM-01", quota:"piano_terra", paretEsterna:false, sole:false },
+  { id:"MS-1190", nome:"Pontificale di Beneventum — XII sec.", tipologia:"pergamena", pH:6.5, DP0:1300, ferroGallico:true, fotosensibili:true, legatura:"buono", deformazioni:0, fragilita:1, alterazioni:1, frequenza:"occasionale", ambienteId:"ENV-BIB-01", quota:"piano_terra", paretEsterna:false, sole:true },
+  { id:"MS-2310", nome:"Antifonario miniato — XIV sec.", tipologia:"pergamena", pH:6.0, DP0:1050, ferroGallico:false, fotosensibili:true, legatura:"buono", deformazioni:1, fragilita:1, alterazioni:2, frequenza:"frequente", ambienteId:"ENV-BIB-01", quota:"piano_terra", paretEsterna:true, sole:true },
+  { id:"MS-7811", nome:"Cartulario di S. Sofia — XI sec.", tipologia:"pergamena", pH:5.5, DP0:850, ferroGallico:true, fotosensibili:false, legatura:"compromesso", deformazioni:2, fragilita:3, alterazioni:2, frequenza:"rara", ambienteId:"ENV-DEP-01", quota:"piano_terra", paretEsterna:true, sole:false },
+  { id:"MS-9245", nome:"Liber Confraternitatis — XVII sec.", tipologia:"carta_acida", pH:4.6, DP0:520, ferroGallico:true, fotosensibili:false, legatura:"fragile", deformazioni:2, fragilita:3, alterazioni:3, frequenza:"rara", ambienteId:"ENV-DEP-01", quota:"piano_terra", paretEsterna:true, sole:false },
+  { id:"MS-3340", nome:"Codex liturgicus — XV sec.", tipologia:"pergamena", pH:6.3, DP0:1200, ferroGallico:true, fotosensibili:true, legatura:"restaurato", deformazioni:1, fragilita:1, alterazioni:1, frequenza:"occasionale", ambienteId:"ENV-SAL-01", quota:"piano_terra", paretEsterna:false, sole:true },
+  { id:"MS-3341", nome:"Diario capitolare — XVIII sec. (soppalco)", tipologia:"carta_stracciata", pH:6.8, DP0:1400, ferroGallico:false, fotosensibili:false, legatura:"buono", deformazioni:0, fragilita:1, alterazioni:1, frequenza:"occasionale", ambienteId:"ENV-SAL-01", quota:"soppalco", paretEsterna:true, sole:true },
+];
+
+// ---------------------------------------------------------------------------
+// SIMULATORE — generatore AR(1) per ciascun profilo ambientale
+// ---------------------------------------------------------------------------
+const PROFILES = {
+  [ENV_TYPES.ARMADIO]:  { Tm:20, Tas:1.0, Tad:0.3, Tn:0.08, RHm:50, RHas:3, RHad:0.8, RHn:0.4, luxDay:0, luxH:[0,0], voc:180, vocDrift:2.5, pm10:4, co2:500, inertia:0.96, soppT:0, soppRH:0 },
+  [ENV_TYPES.BIBLIO]:   { Tm:21, Tas:2.5, Tad:1.0, Tn:0.18, RHm:50, RHas:6, RHad:2.5, RHn:1.0, luxDay:180, luxH:[9,18], voc:250, vocDrift:0, pm10:18, co2:700, inertia:0.80, soppT:0, soppRH:0 },
+  [ENV_TYPES.DEPOSITO]: { Tm:16, Tas:0.6, Tad:0.1, Tn:0.05, RHm:68, RHas:5, RHad:0.5, RHn:0.6, luxDay:0, luxH:[0,0], voc:150, vocDrift:0, pm10:8, co2:550, inertia:0.97, soppT:0, soppRH:0 },
+  [ENV_TYPES.SALA]:     { Tm:20, Tas:5, Tad:2, Tn:0.25, RHm:50, RHas:12, RHad:4, RHn:1.5, luxDay:120, luxH:[8,19], voc:200, vocDrift:0, pm10:22, co2:600, inertia:0.70, soppT:2.0, soppRH:-6.5 },
+};
+
+// PRNG seeded
+function mulberry32(seed) { let a = seed >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function randn(rand){ const u = Math.max(1e-9, rand()), v = rand(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); }
+
+class Simulator {
+  constructor(envId, type, seed=42) {
+    this.envId = envId; this.type = type; this.profile = PROFILES[type];
+    this.rand = mulberry32(seed);
+    this.tState = null; this.rhState = null;
+    this.tStateSop = null; this.rhStateSop = null;
+    this.vocState = this.profile.voc;
+    this.scenario = "none"; this.scenarioStart = null; this.scenarioDur = 72*3600*1000;
+    this.now = new Date();
+  }
+  triggerScenario(s, hours=72) { this.scenario = s; this.scenarioStart = new Date(this.now); this.scenarioDur = hours*3600*1000; }
+  resetScenario() { this.scenario = "none"; this.scenarioStart = null; }
+  scenarioActive(ts) { return this.scenario !== "none" && this.scenarioStart && (ts - this.scenarioStart) <= this.scenarioDur; }
+  scenarioProgress(ts) { if (!this.scenarioActive(ts)) return 0; return Math.min(1, Math.max(0, (ts - this.scenarioStart)/this.scenarioDur)); }
+  seasonal(ts, amp, mean) { const doy = Math.floor((ts - new Date(ts.getFullYear(),0,0))/86400000); return mean + amp*Math.sin(2*Math.PI*(doy-110)/365); }
+  diurnal(ts, amp) { const h = ts.getHours()+ts.getMinutes()/60; return amp*Math.sin(2*Math.PI*(h-8)/24); }
+  ar1(prev, target, alpha, noise) { if (prev===null) return target + randn(this.rand)*noise; return alpha*prev + (1-alpha)*target + randn(this.rand)*noise; }
+  isOpen(ts) { const [h0,h1] = this.profile.luxH; if (h0===h1) return false; return ts.getHours()>=h0 && ts.getHours()<h1 && ts.getDay()!==0; }
+  step(stepMin=10) {
+    const ts = new Date(this.now); this.now = new Date(this.now.getTime() + stepMin*60000);
+    const p = this.profile;
+    let Tt = this.seasonal(ts, p.Tas, p.Tm) + this.diurnal(ts, p.Tad);
+    let RHt = this.seasonal(ts, -p.RHas, p.RHm) + this.diurnal(ts, -p.RHad);
+    let luxExtra = 0, vocExtra = 0;
+
+    // Eventi specifici
+    if (this.type === ENV_TYPES.ARMADIO && this.rand() < 0.002) vocExtra += 80;
+    if (this.type === ENV_TYPES.BIBLIO && this.isOpen(ts) && Math.floor(ts/86400000)%5===0) { Tt += 0.6; RHt += 1.5; }
+    if (this.type === ENV_TYPES.DEPOSITO && (Math.floor(ts/86400000)*13+7)%100 < 4) {
+      const h = ts.getHours()+ts.getMinutes()/60; if (h>4 && h<16) RHt += 4*Math.sin(Math.PI*(h-4)/12);
+    }
+
+    // Scenari
+    if (this.scenarioActive(ts)) {
+      const prog = this.scenarioProgress(ts);
+      if (this.scenario === "A" && this.type === ENV_TYPES.DEPOSITO) RHt += 9*prog;
+      if (this.scenario === "B" && this.type === ENV_TYPES.SALA) {
+        const h = ts.getHours()+ts.getMinutes()/60; Tt += 3*Math.sin(2*Math.PI*h/6)*(0.5+0.5*prog);
+      }
+      if (this.scenario === "C" && this.type === ENV_TYPES.ARMADIO) vocExtra += 1000*prog;
+      if (this.scenario === "D" && this.type === ENV_TYPES.BIBLIO && this.isOpen(ts)) luxExtra += 200*(0.5+0.5*prog);
+    }
+
+    const T = this.ar1(this.tState, Tt, p.inertia, p.Tn);
+    const RH = this.ar1(this.rhState, RHt, p.inertia, p.RHn);
+    this.tState = T; this.rhState = RH;
+
+    let lux = 0;
+    if (this.isOpen(ts)) lux = p.luxDay * (0.7 + 0.6*this.rand()) + luxExtra; else lux = luxExtra;
+    lux = Math.max(0, lux);
+    const UV = lux*0.05;
+    this.vocState = Math.max(50, this.vocState + p.vocDrift*(stepMin/1440) + randn(this.rand)*5);
+    if (ts.getDay()===1 && ts.getHours()===9 && ts.getMinutes()<stepMin) this.vocState = Math.max(50, this.vocState*0.6);
+    const VOC = this.vocState + vocExtra;
+    const PM10 = Math.max(0, p.pm10 + randn(this.rand)*3);
+    const PM25 = PM10*0.55;
+    const CO2 = p.co2 + (this.isOpen(ts)?200:0) + randn(this.rand)*30;
+
+    const base = {
+      timestamp: ts.toISOString(), environment_id: this.envId,
+      T:+T.toFixed(3), RH:+RH.toFixed(2), lux:+lux.toFixed(1), UV:+UV.toFixed(2),
+      PM2_5:+PM25.toFixed(2), PM10:+PM10.toFixed(2), VOC:+VOC.toFixed(1), CO2:+CO2.toFixed(1),
+      quota: null
+    };
+    if (this.type === ENV_TYPES.SALA) {
+      base.quota = "piano_terra";
+      let offT = p.soppT, offRH = p.soppRH;
+      if (this.scenario === "E" && this.scenarioActive(ts)) offT += 0.8*this.scenarioProgress(ts);
+      const TtS = Tt + offT, RHtS = RHt + offRH;
+      const TS = this.ar1(this.tStateSop, TtS, p.inertia, p.Tn);
+      const RHS = this.ar1(this.rhStateSop, RHtS, p.inertia, p.RHn);
+      this.tStateSop = TS; this.rhStateSop = RHS;
+      const sop = {...base, T:+TS.toFixed(3), RH:+RHS.toFixed(2), quota:"soppalco"};
+      return [base, sop];
+    }
+    return [base];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// INDICI DI RISCHIO (porting fedele dal backend)
+// ---------------------------------------------------------------------------
+const clip100 = x => Math.max(0, Math.min(100, x));
+const fpH = pH => 0.55 + (0.72-0.55)*(pH-5)/2;
+const sedlbauer = T => T<=5?95: T>=35?70: 75-0.4*(T-20);
+function brimblecombe(T, RH) { if (RH<=50) return 0; const eT=1560*Math.exp(-((T-29)**2)/(2*16)); const eR=Math.exp(-((RH-70)**2)/(2*100)); return eT*eR; }
+function labelFromRI(ri){ if (ri<20) return 0; if (ri<35) return 1; if (ri<50) return 2; return 3; }
+function severityFromRI(v){ if (v>=50) return "critico"; if (v>=35) return "attenzione"; if (v>=20) return "accettabile"; return "ottimale"; }
+
+function aggregate(samples) {
+  if (!samples.length) return { Tm24:20, Tm30:20, RHm24:50, RHm30:50, dT24:0, dRH24:0, dRH30:0, luxMean:0, luxCum5y:0, VOC24:0, PM10_24:0, oreLIM:0, fracEN:0 };
+  const last24 = Math.min(samples.length, 144);
+  const T = samples.map(s=>s.T), RH = samples.map(s=>s.RH);
+  const lux = samples.map(s=>s.lux), VOC = samples.map(s=>s.VOC), PM = samples.map(s=>s.PM10);
+  const T24 = T.slice(-last24), RH24 = RH.slice(-last24);
+  const mean = a => a.reduce((x,y)=>x+y,0)/Math.max(1,a.length);
+  const Tm30 = mean(T), RHm30 = mean(RH);
+  const luxAct = lux.filter(x=>x>1);
+  const luxMean = luxAct.length? mean(luxAct):0;
+  const duty = lux.filter(x=>x>1).length / Math.max(1,lux.length);
+  const luxCum5y = luxMean*duty*24*365*5;
+  let over = 0;
+  for (let i=0;i<T.length;i++) if (RH[i] > sedlbauer(T[i])) over++;
+  const oreLIM = over/Math.max(1,T.length)*8760;
+  const bandT = [Tm30-1.5, Tm30+1.5], bandRH = [RHm30-3, RHm30+3];
+  const outT = T.filter(x=>x<bandT[0]||x>bandT[1]).length/T.length;
+  const outRH = RH.filter(x=>x<bandRH[0]||x>bandRH[1]).length/RH.length;
+  return {
+    Tm24: mean(T24), Tm30, RHm24: mean(RH24), RHm30,
+    dT24: Math.max(...T24)-Math.min(...T24),
+    dRH24: Math.max(...RH24)-Math.min(...RH24),
+    dRH30: Math.max(...RH)-Math.min(...RH),
+    luxMean, luxCum5y,
+    VOC24: mean(VOC.slice(-last24)), PM10_24: mean(PM.slice(-last24)),
+    oreLIM, fracEN: Math.max(outT, outRH),
+  };
+}
+
+function computeIndices(feat, ms, envType, weightsOverride) {
+  const w = weightsOverride || WEIGHTS[envType];
+  const Teq = feat.Tm30, arr = Math.pow(2, (Teq-20)/10);
+  const baseChem = 100*(1 - fpH(ms.pH));
+  const dp0Factor = Math.max(0.4, Math.min(1.6, 800/Math.max(50, ms.DP0)));
+  const ironGall = ms.ferroGallico ? 1.25 : 1.0;
+  const vocTerm = (feat.VOC24/1000)*w.PM_VOC;
+  const pmTerm = (feat.PM10_24/75)*w.PM_VOC;
+  const chim = clip100(baseChem*arr*dp0Factor*ironGall*(1+0.3*w.T_media_24h*(arr-1))*(1+0.2*(vocTerm+pmTerm)));
+
+  const fluct = (feat.dT24/4)*w.dT_24h + (feat.dRH24/12)*w.dRH_24h;
+  const fragF = 1 + 0.25*ms.fragilita;
+  const mecc = clip100(feat.fracEN*100*fragF*(1+0.5*fluct));
+
+  const eggs = brimblecombe(feat.Tm30, feat.RHm30);
+  const ins = clip100((100*eggs/1560)*(1+0.3*(w.rischio_insetti-0.5)));
+
+  const muf = clip100((100*feat.oreLIM/8760)*(1+0.3*(w.rischio_muffa_LIM-0.5)));
+
+  const sens = ms.fotosensibili ? 2.0 : 1.0;
+  let dE = sens*(feat.luxCum5y/1e6)*5;
+  dE *= 0.6 + 0.4*w.illuminamento;
+  const fot = Math.max(0, Math.min(130, dE));
+
+  const tot = clip100(RI_COEFS.RI_Chimico*chim + RI_COEFS.RI_Meccanico*mecc + RI_COEFS.RI_Insetti*ins + RI_COEFS.RI_Muffa*muf);
+  return { RI_Chimico:+chim.toFixed(2), RI_Meccanico:+mecc.toFixed(2), RI_Insetti:+ins.toFixed(2), RI_Muffa:+muf.toFixed(2), RI_Fotodeterioramento:+fot.toFixed(2), RI_Totale:+tot.toFixed(2), severity: severityFromRI(tot) };
+}
+
+// ---------------------------------------------------------------------------
+// STATE GLOBALE — singleton in memory
+// ---------------------------------------------------------------------------
+const STATE = {
+  simulators: {},
+  telemetry: {},      // env_id -> array (cap 10000)
+  indicesHist: {},    // ms_id -> array (cap 1000)
+  alerts: [],
+  weights: JSON.parse(JSON.stringify(WEIGHTS)),
+  listeners: new Set(),
+  lastEmitted: {},
+};
+
+function notify() { STATE.listeners.forEach(fn => fn()); }
+function subscribe(fn) { STATE.listeners.add(fn); return () => STATE.listeners.delete(fn); }
+
+function bootstrap() {
+  ENVIRONMENTS.forEach(env => {
+    STATE.simulators[env.id] = new Simulator(env.id, env.tipo, env.id.charCodeAt(env.id.length-1)*7+13);
+    STATE.telemetry[env.id] = [];
+  });
+  // Pre-genera 30 giorni di storico (4320 step da 10 min ciascuno = 30 gg)
+  const STEPS = 30 * 144;
+  ENVIRONMENTS.forEach(env => {
+    const sim = STATE.simulators[env.id];
+    sim.now = new Date(Date.now() - STEPS*10*60000);
+    for (let i = 0; i < STEPS; i++) {
+      const out = sim.step(10);
+      out.forEach(s => STATE.telemetry[env.id].push(s));
+    }
+  });
+  MANUSCRIPTS.forEach(m => { STATE.indicesHist[m.id] = []; });
+}
+
+function tickLive() {
+  // Avanza ogni simulator di 10 minuti per ogni tick reale (compressione 60×)
+  ENVIRONMENTS.forEach(env => {
+    const sim = STATE.simulators[env.id];
+    for (let i = 0; i < 6; i++) {
+      const out = sim.step(10);
+      out.forEach(s => {
+        STATE.telemetry[env.id].push(s);
+        if (STATE.telemetry[env.id].length > 10000) STATE.telemetry[env.id].shift();
+      });
+    }
+  });
+  // Calcola indici per ogni manoscritto e genera alert se necessario
+  MANUSCRIPTS.forEach(m => {
+    const idx = computeForManuscript(m.id);
+    STATE.indicesHist[m.id].push({...idx, ts: new Date().toISOString()});
+    if (STATE.indicesHist[m.id].length > 1000) STATE.indicesHist[m.id].shift();
+    maybeEmitAlert(m, idx);
+  });
+  notify();
+}
+
+function getMSSeries(ms, limit=4320) {
+  const env = ENVIRONMENTS.find(e=>e.id===ms.ambienteId);
+  const all = STATE.telemetry[ms.ambienteId] || [];
+  const filt = env.tipo === ENV_TYPES.SALA ? all.filter(s=>s.quota===ms.quota) : all;
+  return filt.slice(-limit);
+}
+
+function computeForManuscript(msId, weightsOverride=null, telemetryOverride=null) {
+  const m = MANUSCRIPTS.find(x=>x.id===msId);
+  const env = ENVIRONMENTS.find(e=>e.id===m.ambienteId);
+  const series = telemetryOverride ?? getMSSeries(m);
+  const feat = aggregate(series);
+  const w = weightsOverride || STATE.weights[env.tipo];
+  return computeIndices(feat, m, env.tipo, w);
+}
+
+function clusterFromRI(ri) { return labelFromRI(ri); }
+
+function predictForManuscript(msId) {
+  const idx = computeForManuscript(msId);
+  const hist = STATE.indicesHist[msId] || [];
+  // Stima rate da regressione lineare degli ultimi 50 punti
+  const last = hist.slice(-50);
+  let rate = 0;
+  if (last.length >= 5) {
+    const xs = last.map((_,i)=>i), ys = last.map(h=>h.RI_Totale);
+    const mx = xs.reduce((a,b)=>a+b,0)/xs.length;
+    const my = ys.reduce((a,b)=>a+b,0)/ys.length;
+    const num = xs.reduce((s,x,i)=>s+(x-mx)*(ys[i]-my),0);
+    const den = xs.reduce((s,x)=>s+(x-mx)**2,0);
+    if (den > 0) rate = num/den; // RI/tick
+    // converti rate per giorno (1 tick = 1 secondo demo = 1 ora simulata)
+    rate = rate * 24;
+  }
+  if (rate <= 0.01) rate = Math.max(0.01, (50 - idx.RI_Totale) / 60); // fallback: arriva a critico in 60 gg
+  const RUT = idx.RI_Totale >= 50 ? 0 : Math.min(365, (50 - idx.RI_Totale) / Math.max(0.01, rate));
+  const conformalQ = 5; // banda ±5 giorni
+  const traj = [];
+  for (let d=1; d<=30; d++) {
+    const ri = Math.min(100, idx.RI_Totale + rate*d);
+    const spread = (conformalQ/30)*d*2;
+    traj.push({ t_days:d, RI_pred:+ri.toFixed(2), lower:+Math.max(0,ri-spread).toFixed(2), upper:+Math.min(100,ri+spread).toFixed(2) });
+  }
+  return { current_RI: idx.RI_Totale, predicted_RI_30d: traj[traj.length-1].RI_pred, RUT_A_days: RUT, RUT_A_lower: Math.max(0,RUT-conformalQ), RUT_A_upper: RUT+conformalQ, trajectory: traj, cluster: clusterFromRI(idx.RI_Totale) };
+}
+
+// ---------------------------------------------------------------------------
+// MOTORE ALERT
+// ---------------------------------------------------------------------------
+function detectTrigger(m, idx, lastSample) {
+  if (lastSample) {
+    const cands = [["RH",lastSample.RH],["T",lastSample.T],["VOC",lastSample.VOC],["lux",lastSample.lux]];
+    for (const [k,v] of cands) {
+      const t = THRESH[k]; if (!t) continue;
+      const att = t.attenzione;
+      if (v < att[0] || v > att[1]) return { var: k, value: v, msg: `${k} fuori soglia di attenzione (${v.toFixed(1)})` };
+    }
+  }
+  return { var: "RI_Totale", value: idx.RI_Totale, msg: `RI Totale elevato (${idx.RI_Totale.toFixed(1)}%)` };
+}
+
+function maybeEmitAlert(m, idx) {
+  let sev = null;
+  if (idx.RI_Totale >= 60) sev = "CRITICA";
+  else if (idx.RI_Totale >= 50) sev = "ALTA";
+  else if (idx.RI_Totale >= 35) sev = "MEDIA";
+  else return;
+  const key = `${m.id}-${sev}`;
+  const now = Date.now();
+  if (STATE.lastEmitted[key] && (now - STATE.lastEmitted[key]) < 30000) return; // 30s dedup
+  STATE.lastEmitted[key] = now;
+  const last = STATE.telemetry[m.ambienteId].slice(-1)[0] || null;
+  const trig = detectTrigger(m, idx, last);
+  const env = ENVIRONMENTS.find(e=>e.id===m.ambienteId);
+  STATE.alerts.unshift({
+    id: `AL-${Math.random().toString(36).slice(2,10).toUpperCase()}`,
+    timestamp: new Date().toISOString(), severity: sev,
+    manuscript_id: m.id, environment_id: m.ambienteId,
+    trigger_variable: trig.var, trigger_value: trig.value, RI_Totale: idx.RI_Totale,
+    message: trig.msg, status: "aperto", note: null,
+  });
+  if (STATE.alerts.length > 200) STATE.alerts.pop();
+}
+
+// ---------------------------------------------------------------------------
+// MOTORE RACCOMANDAZIONI (semplificato)
+// ---------------------------------------------------------------------------
+const RECOMMENDATIONS = {
+  deposito_picco_rh: {
+    azioni_immediate: [
+      "Ispezione visiva del manoscritto: ricerca foxing, macchie, odore di muffa",
+      "Verifica funzionamento dei deumidificatori del deposito",
+      "Controllo trappole entomologiche per Lepismatidae",
+    ],
+    verifiche_tecniche: [
+      "Misurazione puntuale RH in 4 punti del deposito (angoli + parete contro-terra)",
+      "Verifica setpoint sistemi di climatizzazione",
+      "Ispezione pareti contro-terra per umidità di risalita",
+    ],
+    piano_medio_termine: [
+      "Valutare installazione barriera al vapore sulla parete nord",
+      "Considerare incapsulamento in scatola conservativa climaticamente passiva",
+      "Ridondanza deumidificatori con setpoint 55%",
+    ],
+  },
+  sala_oscillazioni_T: {
+    azioni_immediate: [
+      "Verifica HVAC immediata: portate, setpoint, eventuali guasti",
+      "Riposizionamento del manoscritto in zona con T più stabile (P.T.)",
+      "Sospendere temporaneamente la ventilazione forzata se causa picchi",
+    ],
+    verifiche_tecniche: [
+      "Calibrazione sensori di temperatura (P.T. + soppalco)",
+      "Verifica tenuta serramenti e infiltrazioni d'aria",
+    ],
+    piano_medio_termine: [
+      "Audit HVAC con consulente esterno",
+      "Sostituzione termostati con sistema multi-zona",
+    ],
+  },
+  armadio_voc: {
+    azioni_immediate: [
+      "Apertura armadio e ventilazione 30 min/giorno per 7 giorni",
+      "Rimuovere materiali sospetti (cartone non museale, contenitori plastici recenti)",
+      "Ripetere misura VOC dopo 48h",
+    ],
+    verifiche_tecniche: [
+      "Identificare la sorgente VOC (test on/off rimuovendo elementi sospetti)",
+      "Verifica guarnizioni armadio",
+    ],
+    piano_medio_termine: [
+      "Installare scavengers di VOC (carbone attivo, zeoliti)",
+      "Sostituire materiali interni con materiali Oddy-passed",
+    ],
+  },
+  biblioteca_lux: {
+    azioni_immediate: [
+      "Considerare rotazione del manoscritto con un altro meno sensibile",
+      "Ridurre apertura tendaggi nella zona del leggio",
+      "Verifica filtri UV in posa",
+    ],
+    verifiche_tecniche: [
+      "Misurazione UV (µW/lumen) sul leggio nelle ore di picco",
+      "Audit della dose luminosa cumulata",
+    ],
+    piano_medio_termine: [
+      "Filtri UV su finestre orientate sud/ovest",
+      "Rotazione esposizione manufatti miniati (max 3 mesi/anno)",
+    ],
+  },
+  generic: {
+    azioni_immediate: [
+      "Ispezione visiva immediata del manoscritto",
+      "Notifica al responsabile della conservazione",
+      "Documentazione fotografica dello stato corrente",
+    ],
+    verifiche_tecniche: [
+      "Audit completo dei parametri ambientali ultime 72h",
+      "Verifica calibrazione sensori artunified",
+    ],
+    piano_medio_termine: [
+      "Sopralluogo conservatore esterno",
+      "Valutare trasferimento temporaneo del manufatto",
+    ],
+  },
+};
+
+function getRecommendations(alert) {
+  const m = MANUSCRIPTS.find(x=>x.id===alert.manuscript_id);
+  const env = ENVIRONMENTS.find(e=>e.id===alert.environment_id);
+  if (env.tipo === ENV_TYPES.DEPOSITO && (alert.trigger_variable === "RH" || alert.RI_Totale > 35)) return RECOMMENDATIONS.deposito_picco_rh;
+  if (env.tipo === ENV_TYPES.SALA && (alert.trigger_variable === "T" || alert.trigger_variable === "RH")) return RECOMMENDATIONS.sala_oscillazioni_T;
+  if (env.tipo === ENV_TYPES.ARMADIO && alert.trigger_variable === "VOC") return RECOMMENDATIONS.armadio_voc;
+  if (env.tipo === ENV_TYPES.BIBLIO && alert.trigger_variable === "lux") return RECOMMENDATIONS.biblioteca_lux;
+  return RECOMMENDATIONS.generic;
+}
+
+// ---------------------------------------------------------------------------
+// COMPONENTI UI
+// ---------------------------------------------------------------------------
+function useStore() {
+  const [, force] = useState(0);
+  useEffect(() => subscribe(() => force(x => x+1)), []);
+}
+
+function fmtTs(iso) { const d = new Date(iso); return d.toLocaleString("it-IT",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }
+function fmtTime(iso) { const d = new Date(iso); return d.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}); }
+
+const SEV_CLASS = {
+  ottimale:"bg-emerald-100 text-emerald-800 ring-emerald-300",
+  accettabile:"bg-lime-100 text-lime-800 ring-lime-300",
+  attenzione:"bg-amber-100 text-amber-800 ring-amber-300",
+  critico:"bg-red-100 text-red-800 ring-red-300",
+};
+const SEV_LABEL = { ottimale:"Ottimale", accettabile:"Accettabile", attenzione:"Attenzione", critico:"Critico" };
+
+function SeverityBadge({severity}) {
+  return <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ${SEV_CLASS[severity]}`}>● {SEV_LABEL[severity]}</span>;
+}
+
+function KPI({label, value, hint, tone="neutral"}) {
+  const TONE = { neutral:"bg-white", success:"bg-emerald-50 border-emerald-200", warning:"bg-amber-50 border-amber-200", danger:"bg-red-50 border-red-200" };
+  return (
+    <div className={`rounded-xl border border-slate-200 shadow-sm p-4 ${TONE[tone]}`}>
+      <div className="text-xs uppercase tracking-wide text-slate-500 font-semibold">{label}</div>
+      <div className="text-3xl font-bold mt-1">{value}</div>
+      {hint && <div className="text-xs text-slate-500 mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+const NAV = [
+  { id:"collezione", label:"Vista Collezione", icon:"📚" },
+  { id:"ambiente",   label:"Vista Ambiente",   icon:"🌡" },
+  { id:"manufatto",  label:"Vista Manufatto",  icon:"📜" },
+  { id:"predittiva", label:"Vista Predittiva", icon:"🔮" },
+  { id:"alert",      label:"Vista Alert",      icon:"🚨" },
+  { id:"demo",       label:"Demo Scenarios",   icon:"🎬" },
+  { id:"linee",      label:"Linee Guida",      icon:"📖" },
+];
+
+function Sidebar({view, setView}) {
+  return (
+    <aside className="w-64 shrink-0 border-r border-slate-200 bg-white min-h-screen flex flex-col no-print sticky top-0">
+      <div className="px-5 py-5 border-b border-slate-200">
+        <div className="text-base font-bold">VoH</div>
+        <div className="text-xs text-slate-500">Voices of Heritage</div>
+        <div className="text-[10px] text-slate-400 mt-1">CeRICT — Conservatorio di Benevento</div>
+      </div>
+      <nav className="px-3 py-4 space-y-1 flex-1">
+        {NAV.map(it => (
+          <div key={it.id} className={`nav-link ${view===it.id?"nav-link-active":""}`} onClick={()=>setView(it.id)}>
+            <span>{it.icon}</span><span>{it.label}</span>
+          </div>
+        ))}
+      </nav>
+      <div className="px-4 py-3 text-[10px] text-slate-400 border-t border-slate-200 leading-snug">
+        Sistema VoH — CeRICT.<br/>
+        Architettura predittiva derivata da EFAISTOS<br/>
+        (Test Before Invest, Polo P.R.I.D.E.).<br/>
+        Sensore artunified multiparametrico.
+      </div>
+    </aside>
+  );
+}
+
+// ---------------- VIEW: Collezione ----------------
+function CollectionView({setView, setSelectedMs}) {
+  useStore();
+  const summary = useMemo(() => {
+    const per = MANUSCRIPTS.map(m => { const idx = computeForManuscript(m.id); return { id:m.id, nome:m.nome, ambiente:m.ambienteId, RI:idx.RI_Totale, sev:idx.severity }; });
+    const crit = per.filter(p=>p.sev==="critico").length;
+    const att = per.filter(p=>p.sev==="attenzione").length;
+    const open = STATE.alerts.filter(a=>a.status==="aperto").length;
+    return { total: per.length, crit, att, open, per };
+  }, [STATE.alerts.length]);
+
+  return (
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-bold">Vista Collezione</h1>
+        <p className="text-sm text-slate-500">Stato aggregato dei manoscritti monitorati e degli ambienti.</p>
+      </header>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <KPI label="Manufatti totali" value={summary.total}/>
+        <KPI label="In stato critico" value={summary.crit} tone={summary.crit>0?"danger":"success"}/>
+        <KPI label="In attenzione" value={summary.att} tone={summary.att>0?"warning":"neutral"}/>
+        <KPI label="Alert aperti" value={summary.open} tone={summary.open>0?"warning":"neutral"} hint={summary.open>0?"Vai alla Vista Alert →":undefined}/>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Layout della collezione</div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {ENVIRONMENTS.map(env => {
+            const inThis = summary.per.filter(p => p.ambiente === env.id);
+            return (
+              <div key={env.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                <div className="flex justify-between items-baseline mb-3">
+                  <div>
+                    <div className="text-sm font-semibold">{env.nome}</div>
+                    <div className="text-xs text-slate-500">{env.tipo}</div>
+                  </div>
+                  <button className="text-xs underline text-slate-600" onClick={()=>setView("ambiente")}>apri →</button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {inThis.map(m => (
+                    <div key={m.id} className="block bg-white border border-slate-200 rounded-md p-3 hover:shadow cursor-pointer" onClick={()=>{setSelectedMs(m.id); setView("manufatto");}}>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-mono text-slate-500">{m.id}</div>
+                        <SeverityBadge severity={m.sev}/>
+                      </div>
+                      <div className="text-sm font-medium mt-1">{m.nome}</div>
+                      <div className="text-xs text-slate-500 mt-1">RI<sub>tot</sub> = <strong>{m.RI.toFixed(1)}%</strong></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {summary.open>0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <div className="text-sm font-semibold uppercase text-amber-900 mb-1">Azioni pendenti</div>
+          <p className="text-sm text-amber-900">Ci sono <strong>{summary.open}</strong> alert aperti. <button className="underline font-semibold" onClick={()=>setView("alert")}>Vai alla Vista Alert</button></p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------- VIEW: Ambiente ----------------
+const CHANNELS = [
+  { key:"T", label:"T (°C)", color:"#dc2626" },
+  { key:"RH", label:"RH (%)", color:"#2563eb" },
+  { key:"lux", label:"Lux", color:"#f59e0b" },
+  { key:"VOC", label:"VOC (ppb)", color:"#7c3aed" },
+  { key:"PM10", label:"PM10 (µg/m³)", color:"#0891b2" },
+  { key:"CO2", label:"CO₂ (ppm)", color:"#475569" },
+];
+
+function EnvironmentView() {
+  useStore();
+  const [envId, setEnvId] = useState(ENVIRONMENTS[0].id);
+  const [quotaFilter, setQuotaFilter] = useState("piano_terra");
+  const env = ENVIRONMENTS.find(e=>e.id===envId);
+  const isSala = env.tipo === ENV_TYPES.SALA;
+  const samples = useMemo(() => {
+    const all = STATE.telemetry[envId] || [];
+    const filt = isSala ? all.filter(s=>s.quota===quotaFilter) : all;
+    return filt.slice(-300);
+  }, [envId, quotaFilter, STATE.telemetry[envId]?.length]);
+  const data = samples.map(s => ({ ...s, label: fmtTime(s.timestamp) }));
+
+  const breaches = useMemo(() => {
+    const out = {};
+    CHANNELS.forEach(c => out[c.key] = []);
+    samples.forEach(s => {
+      ["T","RH","lux","VOC"].forEach(k => {
+        const t = THRESH[k]; if (!t) return;
+        const att = t.attenzione;
+        if (s[k] < att[0] || s[k] > att[1]) {
+          out[k].push({ label: fmtTime(s.timestamp), [k]: s[k] });
+        }
+      });
+    });
+    return out;
+  }, [samples]);
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-end gap-4 justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Vista Ambiente</h1>
+          <p className="text-sm text-slate-500">Sensore artunified — serie temporali con bande di soglia.</p>
+        </div>
+        <div className="flex gap-2 items-center">
+          <select className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white" value={envId} onChange={e=>setEnvId(e.target.value)}>
+            {ENVIRONMENTS.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+          </select>
+          {isSala && (
+            <select className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white" value={quotaFilter} onChange={e=>setQuotaFilter(e.target.value)}>
+              <option value="piano_terra">Piano terra</option>
+              <option value="soppalco">Soppalco</option>
+            </select>
+          )}
+        </div>
+      </header>
+
+      {CHANNELS.map(c => {
+        const t = THRESH[c.key];
+        return (
+          <div key={c.key} className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+            <div className="flex justify-between items-baseline mb-2">
+              <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide">{c.label}</div>
+              {t && <div className="text-xs text-slate-500">Ottimale {t.ottimale.join("–")} · Attenzione fuori da {t.attenzione.join("–")}</div>}
+            </div>
+            <ResponsiveContainer width="100%" height={170}>
+              <ComposedChart data={data}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0"/>
+                <XAxis dataKey="label" tick={{fontSize:10}} interval={Math.max(0, Math.floor(data.length/12))}/>
+                <YAxis tick={{fontSize:11}}/>
+                {t && (<>
+                  <ReferenceArea y1={t.ottimale[0]} y2={t.ottimale[1]} fill="#16a34a" fillOpacity={0.07}/>
+                  <ReferenceArea y1={t.attenzione[0]} y2={t.attenzione[1]} fill="#f59e0b" fillOpacity={0.06}/>
+                </>)}
+                <Tooltip/>
+                <Line type="monotone" dataKey={c.key} stroke={c.color} dot={false} strokeWidth={1.5} isAnimationActive={false}/>
+                {breaches[c.key].length > 0 && <Scatter data={breaches[c.key]} fill="#000" shape="triangle"/>}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        );
+      })}
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-2">Box-plot stratificato per cluster</div>
+        <p className="text-sm text-slate-500 mb-2">Distribuzione delle feature ambientali nella finestra corrente.</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+          {["T","RH","VOC","PM10"].map(k => {
+            const arr = samples.map(s=>s[k]).sort((a,b)=>a-b);
+            if (!arr.length) return null;
+            const q = p => arr[Math.min(arr.length-1, Math.floor(p*arr.length))];
+            const min=arr[0], max=arr[arr.length-1], q1=q(0.25), med=q(0.5), q3=q(0.75);
+            return (
+              <div key={k} className="bg-slate-50 rounded-md p-3">
+                <div className="font-semibold text-slate-700 mb-1">{k}</div>
+                <div className="text-slate-500">min {min.toFixed(1)} · max {max.toFixed(1)}</div>
+                <div className="mt-2 h-3 bg-slate-200 rounded-sm relative">
+                  <div className="absolute inset-y-0 bg-slate-400" style={{left:`${(q1-min)/Math.max(0.01,max-min)*100}%`, right:`${(1-(q3-min)/Math.max(0.01,max-min))*100}%`}}/>
+                  <div className="absolute inset-y-0 w-px bg-black" style={{left:`${(med-min)/Math.max(0.01,max-min)*100}%`}}/>
+                </div>
+                <div className="mt-1">μ̃ {med.toFixed(1)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- VIEW: Manufatto ----------------
+function ManuscriptView({selectedMs, setSelectedMs}) {
+  useStore();
+  const id = selectedMs || MANUSCRIPTS[0].id;
+  const m = MANUSCRIPTS.find(x=>x.id===id);
+  const idx = computeForManuscript(id);
+  const hist = (STATE.indicesHist[id] || []).slice(-20);
+
+  const radarData = [
+    { metric:"Chimico", value: idx.RI_Chimico },
+    { metric:"Meccanico", value: idx.RI_Meccanico*10 },
+    { metric:"Insetti", value: idx.RI_Insetti },
+    { metric:"Muffa", value: idx.RI_Muffa*10 },
+    { metric:"Fotodet.", value: Math.min(100, (idx.RI_Fotodeterioramento/130)*100) },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-end gap-4 justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Vista Manufatto</h1>
+          <p className="text-sm text-slate-500">Scheda codicologica e indici di rischio.</p>
+        </div>
+        <select className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white" value={id} onChange={e=>setSelectedMs(e.target.value)}>
+          {MANUSCRIPTS.map(mm => <option key={mm.id} value={mm.id}>{mm.id} — {mm.nome}</option>)}
+        </select>
+      </header>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+          <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Scheda codicologica</div>
+          <dl className="grid grid-cols-2 gap-y-2 text-sm">
+            <dt className="text-slate-500">ID</dt><dd className="font-mono">{m.id}</dd>
+            <dt className="text-slate-500">Nome</dt><dd>{m.nome}</dd>
+            <dt className="text-slate-500">Supporto</dt><dd>{m.tipologia}</dd>
+            <dt className="text-slate-500">pH stimato</dt><dd>{m.pH}</dd>
+            <dt className="text-slate-500">DP₀</dt><dd>{m.DP0}</dd>
+            <dt className="text-slate-500">Inchiostro ferro-gallico</dt><dd>{m.ferroGallico?"sì":"no"}</dd>
+            <dt className="text-slate-500">Pigmenti fotosensibili</dt><dd>{m.fotosensibili?"sì":"no"}</dd>
+            <dt className="text-slate-500">Stato legatura</dt><dd>{m.legatura}</dd>
+            <dt className="text-slate-500">Deformazioni</dt><dd>{m.deformazioni}/3</dd>
+            <dt className="text-slate-500">Fragilità</dt><dd>{m.fragilita}/3</dd>
+            <dt className="text-slate-500">Alterazioni cromatiche</dt><dd>{m.alterazioni}/3</dd>
+            <dt className="text-slate-500">Frequenza consultazione</dt><dd>{m.frequenza}</dd>
+            <dt className="text-slate-500">Posizione</dt><dd>{m.quota}{m.paretEsterna?", parete est.":""}{m.sole?", sole":""}</dd>
+            <dt className="text-slate-500">Ambiente</dt><dd className="font-mono">{m.ambienteId}</dd>
+          </dl>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+          <div className="flex justify-between items-baseline">
+            <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide">Indici di rischio</div>
+            <SeverityBadge severity={idx.severity}/>
+          </div>
+          <div className="text-center my-3">
+            <div className="text-xs uppercase tracking-wide text-slate-500">RI<sub>Totale</sub></div>
+            <div className="text-5xl font-bold">{idx.RI_Totale.toFixed(1)}%</div>
+          </div>
+          <ResponsiveContainer width="100%" height={250}>
+            <RadarChart data={radarData}>
+              <PolarGrid stroke="#cbd5e1"/>
+              <PolarAngleAxis dataKey="metric" tick={{fontSize:11}}/>
+              <PolarRadiusAxis angle={90} domain={[0,100]} tick={{fontSize:9}}/>
+              <Radar dataKey="value" stroke="#0f172a" fill="#0f172a" fillOpacity={0.3}/>
+            </RadarChart>
+          </ResponsiveContainer>
+          <div className="grid grid-cols-2 gap-y-1 text-xs mt-2">
+            <div>RI Chimico: <strong>{idx.RI_Chimico.toFixed(1)}%</strong></div>
+            <div>RI Meccanico: <strong>{idx.RI_Meccanico.toFixed(2)}%</strong></div>
+            <div>RI Insetti: <strong>{idx.RI_Insetti.toFixed(1)}%</strong></div>
+            <div>RI Muffa: <strong>{idx.RI_Muffa.toFixed(2)}%</strong></div>
+            <div className="col-span-2">RI Fotodet.: <strong>ΔE* {idx.RI_Fotodeterioramento.toFixed(1)}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Cronologia ultime misurazioni</div>
+        {hist.length === 0 ? (
+          <p className="text-sm text-slate-500">Cronologia in popolamento. Attendi il prossimo tick.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-slate-500 border-b">
+              <tr><th className="py-1">Timestamp</th><th>Chim.</th><th>Mecc.</th><th>Ins.</th><th>Muffa</th><th>RI Tot</th><th>Sev.</th></tr>
+            </thead>
+            <tbody>
+              {hist.map((h,i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-1">{fmtTs(h.ts)}</td>
+                  <td>{h.RI_Chimico.toFixed(1)}</td>
+                  <td>{h.RI_Meccanico.toFixed(2)}</td>
+                  <td>{h.RI_Insetti.toFixed(1)}</td>
+                  <td>{h.RI_Muffa.toFixed(2)}</td>
+                  <td><strong>{h.RI_Totale.toFixed(1)}</strong></td>
+                  <td><SeverityBadge severity={h.severity}/></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- VIEW: Predittiva ----------------
+const CLUSTER_COLORS = ["#16a34a","#84cc16","#f59e0b","#dc2626","#94a3b8"];
+
+function PredictiveView({selectedMs, setSelectedMs}) {
+  useStore();
+  const id = selectedMs || MANUSCRIPTS[0].id;
+  const m = MANUSCRIPTS.find(x=>x.id===id);
+  const pred = predictForManuscript(id);
+  const hist = (STATE.indicesHist[id] || []).slice(-30);
+  const traj = [
+    ...hist.map((h,i) => ({ t: i - hist.length, RI: h.RI_Totale })),
+    ...pred.trajectory.map(p => ({ t: p.t_days, RI_pred: p.RI_pred, lower: p.lower, upper: p.upper })),
+  ];
+
+  const [tSet, setTSet] = useState("");
+  const [rhSet, setRhSet] = useState("");
+  const [luxSet, setLuxSet] = useState("");
+  const [vocSet, setVocSet] = useState("");
+  const [targetEnv, setTargetEnv] = useState("");
+  const [whatIf, setWhatIf] = useState(null);
+
+  const runWhatIf = () => {
+    let series = getMSSeries(m).map(s => ({...s}));
+    if (tSet) series.forEach(s => s.T = +tSet);
+    if (rhSet) series.forEach(s => s.RH = +rhSet);
+    if (luxSet) series.forEach(s => s.lux = +luxSet);
+    if (vocSet) series.forEach(s => s.VOC = +vocSet);
+    let weights = STATE.weights[ENVIRONMENTS.find(e=>e.id===m.ambienteId).tipo];
+    if (targetEnv) {
+      const te = ENVIRONMENTS.find(e=>e.id===targetEnv);
+      if (te) weights = STATE.weights[te.tipo];
+    }
+    setWhatIf(computeForManuscript(id, weights, series));
+  };
+
+  // t-SNE mock — proietta i 30 punti più recenti su 2D usando T_med vs RH_med
+  const tsneData = useMemo(() => {
+    const all = STATE.indicesHist[id] || [];
+    return all.slice(-100).map((h,i) => {
+      const cluster = labelFromRI(h.RI_Totale);
+      return { x: h.RI_Chimico, y: h.RI_Insetti, z: 50, cluster };
+    });
+  }, [STATE.indicesHist[id]?.length, id]);
+  const currentPt = tsneData.length ? tsneData[tsneData.length-1] : null;
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-end gap-4 justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Vista Predittiva</h1>
+          <p className="text-sm text-slate-500">Traiettoria RI, RUT-A e simulatore what-if.</p>
+        </div>
+        <select className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white" value={id} onChange={e=>setSelectedMs(e.target.value)}>
+          {MANUSCRIPTS.map(mm => <option key={mm.id} value={mm.id}>{mm.id} — {mm.nome}</option>)}
+        </select>
+      </header>
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Traiettoria RI<sub>Totale</sub> — passato + 30 gg di proiezione</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={traj}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0"/>
+            <XAxis dataKey="t" tick={{fontSize:11}} label={{value:"giorni", position:"insideBottom", fontSize:10}}/>
+            <YAxis tick={{fontSize:11}} domain={[0,100]}/>
+            <Tooltip/>
+            <Legend/>
+            <Area type="monotone" dataKey="upper" stroke="none" fill="#0ea5e9" fillOpacity={0.15} name="banda 90%"/>
+            <Area type="monotone" dataKey="lower" stroke="none" fill="#fff" fillOpacity={1}/>
+            <Line type="monotone" dataKey="RI" stroke="#0f172a" strokeWidth={2} dot={false} name="osservato"/>
+            <Line type="monotone" dataKey="RI_pred" stroke="#0ea5e9" strokeWidth={2} strokeDasharray="4 2" dot={false} name="predetto"/>
+          </ComposedChart>
+        </ResponsiveContainer>
+        <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+          <div className="bg-slate-50 rounded-md p-3"><div className="text-xs uppercase text-slate-500">RI corrente</div><div className="text-2xl font-bold">{pred.current_RI.toFixed(1)}%</div></div>
+          <div className="bg-slate-50 rounded-md p-3"><div className="text-xs uppercase text-slate-500">RI a 30 gg</div><div className="text-2xl font-bold">{pred.predicted_RI_30d.toFixed(1)}%</div></div>
+          <div className="bg-amber-50 rounded-md p-3 border border-amber-200">
+            <div className="text-xs uppercase text-amber-700">RUT-A</div>
+            <div className="text-2xl font-bold text-amber-900">{pred.RUT_A_days >= 365 ? "—" : pred.RUT_A_days.toFixed(0) + " gg"}</div>
+            {pred.RUT_A_days < 365 && <div className="text-xs text-amber-700">IC 90%: [{pred.RUT_A_lower.toFixed(0)}, {pred.RUT_A_upper.toFixed(0)}]</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Simulatore what-if</div>
+        <p className="text-sm text-slate-500 mb-3">Imposta valori ipotetici per ricalcolare RI<sub>Totale</sub>. Cambiare ambiente target applica la matrice pesi del nuovo contesto.</p>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {[["T (°C)",tSet,setTSet],["RH (%)",rhSet,setRhSet],["lux",luxSet,setLuxSet],["VOC ppb",vocSet,setVocSet]].map(([lab,v,set]) => (
+            <div key={lab}>
+              <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">{lab}</label>
+              <input type="number" className="border border-slate-300 rounded-md px-2 py-1.5 text-sm w-full" value={v} onChange={e=>set(e.target.value)}/>
+            </div>
+          ))}
+          <div>
+            <label className="block text-xs font-semibold uppercase text-slate-500 mb-1">Sposta in ambiente</label>
+            <select className="border border-slate-300 rounded-md px-2 py-1.5 text-sm w-full" value={targetEnv} onChange={e=>setTargetEnv(e.target.value)}>
+              <option value="">—</option>
+              {ENVIRONMENTS.map(e => <option key={e.id} value={e.id}>{e.nome}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm" onClick={runWhatIf}>Calcola</button>
+          <button className="px-3 py-1.5 rounded-md bg-slate-100 text-sm" onClick={()=>{setTSet("");setRhSet("");setLuxSet("");setVocSet("");setTargetEnv("");setWhatIf(null);}}>Reset</button>
+        </div>
+        {whatIf && (
+          <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+            <div className="bg-slate-50 rounded-md p-3">
+              <div className="text-xs uppercase text-slate-500">RI Totale (what-if)</div>
+              <div className="text-2xl font-bold">{whatIf.RI_Totale.toFixed(1)}%</div>
+              <SeverityBadge severity={whatIf.severity}/>
+            </div>
+            <div className="bg-slate-50 rounded-md p-3 col-span-2 text-xs grid grid-cols-2 gap-y-1">
+              <div>Chimico: <strong>{whatIf.RI_Chimico.toFixed(1)}%</strong></div>
+              <div>Meccanico: <strong>{whatIf.RI_Meccanico.toFixed(2)}%</strong></div>
+              <div>Insetti: <strong>{whatIf.RI_Insetti.toFixed(1)}%</strong></div>
+              <div>Muffa: <strong>{whatIf.RI_Muffa.toFixed(2)}%</strong></div>
+              <div className="col-span-2">Foto.: <strong>ΔE* {whatIf.RI_Fotodeterioramento.toFixed(1)}</strong></div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Proiezione cluster diagnostici</div>
+        <p className="text-xs text-slate-500 mb-2">Asse X: RI_Chimico — Asse Y: RI_Insetti — colore: cluster (0 sano → 3 pre-fault).</p>
+        <ResponsiveContainer width="100%" height={320}>
+          <ScatterChart>
+            <CartesianGrid strokeDasharray="3 3"/>
+            <XAxis type="number" dataKey="x" name="RI_Chimico" tick={{fontSize:10}} domain={[0,100]}/>
+            <YAxis type="number" dataKey="y" name="RI_Insetti" tick={{fontSize:10}} domain={[0,100]}/>
+            <Tooltip/>
+            {[0,1,2,3].map(c => {
+              const pts = tsneData.filter(p=>p.cluster===c);
+              if (!pts.length) return null;
+              return <Scatter key={c} data={pts} fill={CLUSTER_COLORS[c]} name={`Cluster ${c}`}/>;
+            })}
+            {currentPt && <Scatter data={[currentPt]} fill="#000" shape="star" name="manufatto corrente"/>}
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- VIEW: Alert ----------------
+const ALERT_SEV_COLOR = {
+  INFO:"bg-slate-100 text-slate-800 ring-slate-300",
+  MEDIA:"bg-amber-100 text-amber-800 ring-amber-300",
+  ALTA:"bg-orange-100 text-orange-800 ring-orange-300",
+  CRITICA:"bg-red-100 text-red-800 ring-red-300",
+};
+
+function AlertsView() {
+  useStore();
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState(null);
+  const list = STATE.alerts.filter(a => !filter || a.status === filter);
+
+  const ack = (id, status) => {
+    const a = STATE.alerts.find(x=>x.id===id);
+    if (a) { a.status = status; notify(); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <header className="flex flex-wrap items-end gap-4 justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Vista Alert</h1>
+          <p className="text-sm text-slate-500">Cronologia e gestione degli alert.</p>
+        </div>
+        <select className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white" value={filter} onChange={e=>setFilter(e.target.value)}>
+          <option value="">Tutti</option>
+          <option value="aperto">Aperti</option>
+          <option value="preso_in_carico">In carico</option>
+          <option value="risolto">Risolti</option>
+        </select>
+      </header>
+      {list.length === 0 ? (
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 text-sm text-slate-500">
+          Nessun alert{filter?` con stato "${filter}"`:""}. Lancia uno scenario demo per generarne.
+        </div>
+      ) : (
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase text-slate-500 bg-slate-50">
+              <tr><th className="px-4 py-2">Timestamp</th><th>Sev.</th><th>Manoscritto</th><th>Ambiente</th><th>Trigger</th><th>RI Tot</th><th>Stato</th><th></th></tr>
+            </thead>
+            <tbody>
+              {list.map(a => {
+                const reco = expanded===a.id ? getRecommendations(a) : null;
+                return (
+                  <React.Fragment key={a.id}>
+                    <tr className="border-b border-slate-100">
+                      <td className="px-4 py-2">{fmtTs(a.timestamp)}</td>
+                      <td><span className={`px-2 py-0.5 rounded ring-1 text-xs font-semibold ${ALERT_SEV_COLOR[a.severity]}`}>{a.severity}</span></td>
+                      <td className="font-mono text-xs">{a.manuscript_id}</td>
+                      <td className="font-mono text-xs">{a.environment_id}</td>
+                      <td>{a.trigger_variable}=<strong>{a.trigger_value.toFixed(1)}</strong></td>
+                      <td>{a.RI_Totale.toFixed(1)}%</td>
+                      <td className="text-xs">{a.status}</td>
+                      <td className="px-4 py-2 text-right space-x-2">
+                        <button className="px-2 py-1 rounded bg-slate-100 text-xs" onClick={()=>setExpanded(expanded===a.id?null:a.id)}>{expanded===a.id?"chiudi":"dettagli"}</button>
+                        {a.status==="aperto" && <button className="px-2 py-1 rounded bg-slate-900 text-white text-xs" onClick={()=>ack(a.id,"preso_in_carico")}>ack</button>}
+                        {a.status==="preso_in_carico" && <button className="px-2 py-1 rounded bg-slate-900 text-white text-xs" onClick={()=>ack(a.id,"risolto")}>risolvi</button>}
+                      </td>
+                    </tr>
+                    {expanded===a.id && reco && (
+                      <tr className="border-b border-slate-100 bg-slate-50">
+                        <td colSpan={8} className="px-6 py-3 text-sm">
+                          <div className="font-semibold mb-1">{a.message}</div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                            <RecoBlock title="Azioni immediate (24h)" items={reco.azioni_immediate}/>
+                            <RecoBlock title="Verifiche tecniche (settimana)" items={reco.verifiche_tecniche}/>
+                            <RecoBlock title="Piano medio termine (mese)" items={reco.piano_medio_termine}/>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecoBlock({title, items}) {
+  return (
+    <div className="bg-white rounded-md p-3 border border-slate-200">
+      <div className="text-xs font-semibold uppercase text-slate-500 mb-2">{title}</div>
+      <ul className="text-xs space-y-1 list-disc list-inside">{items.map((x,i) => <li key={i}>{x}</li>)}</ul>
+    </div>
+  );
+}
+
+// ---------------- VIEW: Demo ----------------
+const SCENARIOS = [
+  { id:"A", name:"Picco RH", trigger:"RH > 65% per 48h+ in deposito sotterraneo", effect:"RI_Muffa da attenzione a critica, cluster 1→2/3", envType:ENV_TYPES.DEPOSITO },
+  { id:"B", name:"Oscillazioni T rapide", trigger:"ΔT24h > 4 °C per 3 giorni in sala storica P.T.", effect:"RI_Meccanico oltre critica, anomalia EN 15757", envType:ENV_TYPES.SALA },
+  { id:"C", name:"Saturazione VOC", trigger:"VOC > 1000 ppb in armadio chiuso", effect:"Cluster 2, aumento peso rischio chimico", envType:ENV_TYPES.ARMADIO },
+  { id:"D", name:"Esposizione luminosa", trigger:"Dose settimanale > 500 lux·ore in biblioteca", effect:"RI_Fotodeterioramento → classe Alto", envType:ENV_TYPES.BIBLIO },
+  { id:"E", name:"Stratificazione termica", trigger:"Gradiente T pavimento-soppalco > 2.5 °C", effect:"Modello identifica differenziale al soppalco", envType:ENV_TYPES.SALA },
+];
+
+function DemoView() {
+  const [msg, setMsg] = useState("");
+  const run = (s) => {
+    const env = ENVIRONMENTS.find(e => e.tipo === s.envType);
+    if (!env) return;
+    STATE.simulators[env.id].triggerScenario(s.id, 72);
+    setMsg(`Scenario ${s.id} avviato su ${env.nome}. Osserva l'evoluzione nelle altre viste.`);
+  };
+  const reset = () => {
+    Object.values(STATE.simulators).forEach(s => s.resetScenario());
+    setMsg("Tutti gli ambienti riportati a regime nominale.");
+  };
+  return (
+    <div className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-bold">Demo Scenarios</h1>
+        <p className="text-sm text-slate-500">Cinque scenari A–E (D4.2.2.2 Tab.4): inietta un trigger, osserva la migrazione di cluster e l'alert generato.</p>
+      </header>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {SCENARIOS.map(s => (
+          <div key={s.id} className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+            <div className="flex items-baseline justify-between">
+              <div className="text-sm font-bold">Scenario {s.id} — {s.name}</div>
+              <button className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm" onClick={()=>run(s)}>Avvia</button>
+            </div>
+            <div className="text-xs text-slate-500 mt-1">{s.envType}</div>
+            <div className="mt-3 text-sm">
+              <div><span className="text-slate-500 text-xs">Trigger:</span> {s.trigger}</div>
+              <div><span className="text-slate-500 text-xs">Effetto:</span> {s.effect}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2 items-center">
+        <button className="px-3 py-1.5 rounded-md bg-slate-100 text-sm" onClick={reset}>Reset tutti gli ambienti</button>
+        {msg && <span className="text-sm text-slate-600">{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- VIEW: Linee Guida ----------------
+const GUIDELINES = [
+  { id:ENV_TYPES.ARMADIO, titolo:"Armadio climatizzato",
+    profilo:"Inerzia termo-igrometrica alta. Rischio chimico dominante per accumulo VOC endogeni; rischio biologico secondario.",
+    variabili:["PM/VOC (peso 0.9)", "rischio_insetti (0.7)", "rischio_muffa_LIM (0.6)"],
+    soglie:{ "T":"16–22 °C, ΔT24h < 1.5 °C", "RH":"45–55%, ΔRH24h < 5%", "VOC":"ricambio aria se > 500 ppb persistenti", "lux":"buio in chiusura; max 50 lux a porte aperte" },
+    alert:["Saturazione VOC > 1000 ppb (Scenario C) → ventilazione 30 min/g per 7 gg", "Apertura prolungata > 4h → bilancio igrometrico alterato"],
+    pratiche:["Ricambio aria controllato post-apertura", "Carbone attivo / scavengers per VOC", "Schede di consultazione con tracking aperture", "Verifica trimestrale guarnizioni"] },
+  { id:ENV_TYPES.BIBLIO, titolo:"Biblioteca di consultazione",
+    profilo:"Inerzia media. Picchi luminosi durante l'apertura, oscillazioni RH/T da affluenza. Fotodeterioramento dominante per pigmenti sensibili.",
+    variabili:["illuminamento (1.0)", "dRH_24h (0.8)", "RH_media_30gg (0.7)", "dT_24h (0.7)"],
+    soglie:{ "T":"19–22 °C, ΔT24h < 2.5 °C", "RH":"45–55%, ΔRH24h < 8%", "lux":"max 50 per pigmenti sensibili / 150 generale; UV < 30 µW/lm", "Dose settimanale":"< 500 lux·h su miniato" },
+    alert:["Esposizione luminosa > soglia (Scenario D) → rotazione manufatto / filtri UV", "Affluenza alta → verifica HVAC e turni di consultazione"],
+    pratiche:["Filtri UV su finestre + tendaggi a luce diffusa", "Leggii con LED dimmerati", "Rotazione esposizione manufatti miniati ogni 6–12 mesi", "Controllo accessi con prenotazione"] },
+  { id:ENV_TYPES.DEPOSITO, titolo:"Deposito sotterraneo",
+    profilo:"Inerzia alta in T, RH cronicamente sopra soglia. Rischio biologico dominante (muffa, insetti).",
+    variabili:["RH_media_30gg (0.9)", "rischio_muffa_LIM (1.0)", "rischio_insetti (0.9)"],
+    soglie:{ "T":"14–18 °C stabile", "RH":"< 60%, mai > 65% per più di 24h", "Ore sopra LIM Sedlbauer/anno":"< 260 (≈3%)", "PM10":"< 40 µg/m³" },
+    alert:["Picco RH > 65% per 48h+ (Scenario A) → ispezione visiva e verifica deumidificatori", "Catture entomologiche > 2/mese"],
+    pratiche:["Deumidificatori ridondanti + setpoint 55%", "Barriere al vapore su pareti contro-terra", "Trappole entomologiche con monitoraggio mensile", "Incapsulamento in scatole conservative passive"] },
+  { id:ENV_TYPES.SALA, titolo:"Sala storica monumentale (P.T. + Soppalco)",
+    profilo:"Inerzia bassa, ampia escursione stagionale, stratificazione termica. Rischio meccanico dominante.",
+    variabili:["dRH_24h (1.0)", "gradiente_verticale_T (1.0)", "dT_24h (0.9)", "illuminamento (0.9)", "T_media_24h (0.8)"],
+    soglie:{ "T":"16–24 °C, ΔT24h < 2.5 °C", "RH":"45–60%, ΔRH24h < 8%", "Gradiente verticale T":"< 2.5 °C tra P.T. e soppalco", "lux":"max 150 generale; max 50 per miniati" },
+    alert:["Oscillazioni T rapide (Scenario B) → verifica HVAC", "Stratificazione > 2.5 °C (Scenario E) → redistribuzione manufatti"],
+    pratiche:["HVAC con sensori multi-punto", "Ventilazione attiva per ridurre stratificazione", "Manufatti più fragili al P.T.", "Manutenzione programmata serramenti"] },
+];
+
+const COMP = [
+  ["Armadio chiuso","alto","basso","medio","medio","basso","alto"],
+  ["Biblioteca","medio","medio","basso","basso","alto","medio"],
+  ["Deposito sotterraneo","medio","basso","alto","alto","basso","medio"],
+  ["Sala storica P.T./soppalco","medio","alto","medio","medio","alto","medio"],
+];
+const RISK_C = l => l==="alto"?"bg-red-100 text-red-800":l==="medio"?"bg-amber-100 text-amber-800":"bg-emerald-100 text-emerald-800";
+
+function GuidelinesView() {
+  const [active, setActive] = useState(GUIDELINES[0].id);
+  const cur = GUIDELINES.find(g=>g.id===active);
+  const w = STATE.weights[active];
+  return (
+    <div className="space-y-6">
+      <header className="flex items-end justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Linee Guida</h1>
+          <p className="text-sm text-slate-500">Linee guida operative per i 4 contesti ambientali (D4.2.2.2 §10).</p>
+        </div>
+        <button className="px-3 py-1.5 rounded-md bg-slate-100 text-sm no-print" onClick={()=>window.print()}>🖨 Stampa PDF</button>
+      </header>
+      <div className="flex gap-2 flex-wrap no-print">
+        {GUIDELINES.map(g => (
+          <button key={g.id} className={`px-3 py-1.5 rounded-md text-sm ${active===g.id?"bg-slate-900 text-white":"bg-slate-100"}`} onClick={()=>setActive(g.id)}>{g.titolo}</button>
+        ))}
+      </div>
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 print-page">
+        <h2 className="text-xl font-bold mb-3">{cur.titolo}</h2>
+        <section className="mb-4"><h3 className="text-sm font-semibold uppercase text-slate-500 mb-1">Profilo di criticità</h3><p className="text-sm">{cur.profilo}</p></section>
+        <section className="mb-4">
+          <h3 className="text-sm font-semibold uppercase text-slate-500 mb-1">Variabili critiche prioritarie</h3>
+          <ul className="text-sm list-disc list-inside">{cur.variabili.map((v,i) => <li key={i}>{v}</li>)}</ul>
+          <div className="mt-2 grid grid-cols-3 gap-2 text-xs bg-slate-50 p-3 rounded-md">
+            {Object.entries(w).map(([k,v]) => (
+              <div key={k} className="flex justify-between">
+                <span>{k}</span>
+                <strong className={v>=0.9?"text-red-700":v>=0.7?"text-amber-700":""}>{v.toFixed(2)}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="mb-4">
+          <h3 className="text-sm font-semibold uppercase text-slate-500 mb-1">Soglie operative</h3>
+          <table className="text-sm w-full"><tbody>{Object.entries(cur.soglie).map(([k,v])=>(
+            <tr key={k} className="border-b border-slate-100"><td className="py-1 pr-3 text-slate-500">{k}</td><td>{v}</td></tr>
+          ))}</tbody></table>
+        </section>
+        <section className="mb-4"><h3 className="text-sm font-semibold uppercase text-slate-500 mb-1">Alert e consigli tipici</h3><ul className="text-sm list-disc list-inside">{cur.alert.map((a,i) => <li key={i}>{a}</li>)}</ul></section>
+        <section><h3 className="text-sm font-semibold uppercase text-slate-500 mb-1">Buone pratiche conservative</h3><ul className="text-sm list-disc list-inside">{cur.pratiche.map((b,i)=> <li key={i}>{b}</li>)}</ul></section>
+      </div>
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 print-page">
+        <div className="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-2">Tabella sinottica — rischi dominanti (D4.2.2.2 Tab.6)</div>
+        <table className="w-full text-sm">
+          <thead className="text-xs uppercase text-slate-500"><tr><th className="text-left py-2">Ambiente</th><th>Chimico</th><th>Meccanico</th><th>Muffa</th><th>Insetti</th><th>Fotodet.</th><th>Aria</th></tr></thead>
+          <tbody>{COMP.map(row => (
+            <tr key={row[0]} className="border-b border-slate-100">
+              <td className="py-2 font-medium">{row[0]}</td>
+              {row.slice(1).map((v,i) => <td key={i} className="text-center"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${RISK_C(v)}`}>{v}</span></td>)}
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// APP ROOT
+// ---------------------------------------------------------------------------
+function App() {
+  const [view, setView] = useState("collezione");
+  const [selectedMs, setSelectedMs] = useState(MANUSCRIPTS[0].id);
+
+  useEffect(() => {
+    bootstrap();
+    notify();
+    const id = setInterval(tickLive, 1000);  // 1 tick/sec → 1h simulata
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="min-h-screen flex">
+      <Sidebar view={view} setView={setView}/>
+      <main className="flex-1 px-8 py-6">
+        {view === "collezione" && <CollectionView setView={setView} setSelectedMs={setSelectedMs}/>}
+        {view === "ambiente"   && <EnvironmentView/>}
+        {view === "manufatto"  && <ManuscriptView selectedMs={selectedMs} setSelectedMs={setSelectedMs}/>}
+        {view === "predittiva" && <PredictiveView selectedMs={selectedMs} setSelectedMs={setSelectedMs}/>}
+        {view === "alert"      && <AlertsView/>}
+        {view === "demo"       && <DemoView/>}
+        {view === "linee"      && <GuidelinesView/>}
+        <footer className="mt-12 pt-4 border-t border-slate-200 text-xs text-slate-500 leading-relaxed no-print">
+          Sistema VoH — CeRICT — Architettura predittiva derivata da EFAISTOS (Test Before Invest, Polo P.R.I.D.E.). Sensore artunified multiparametrico.
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
