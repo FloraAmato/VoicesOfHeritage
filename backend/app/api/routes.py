@@ -45,6 +45,8 @@ from app.models.schemas import (
     Environment,
     Manuscript,
 )
+from app.services.alerts import get_recommendations as build_recommendations
+from app.services.ml_pipeline import get_tsne, predict_for_manuscript
 from app.services.risk_pipeline import compute_indices_for_manuscript
 from app.services.simulator import Scenario
 from app.services.store import store
@@ -81,6 +83,28 @@ def get_indices_history(manuscript_id: str, limit: int = Query(200, ge=1, le=200
     if manuscript_id not in store.manuscripts:
         raise HTTPException(404, "Manuscript not found")
     return store.get_indices_history(manuscript_id, limit=limit)
+
+
+@router.get("/manuscripts/{manuscript_id}/predict")
+def predict_endpoint(manuscript_id: str):
+    if manuscript_id not in store.manuscripts:
+        raise HTTPException(404, "Manuscript not found")
+    return predict_for_manuscript(manuscript_id)
+
+
+@router.get("/environments/{env_id}/tsne")
+def env_tsne(env_id: str, manuscript_id: Optional[str] = None):
+    if env_id not in store.environments:
+        raise HTTPException(404, "Environment not found")
+    return get_tsne(env_id, manuscript_id)
+
+
+@router.get("/alerts/{alert_id}/recommendations")
+def alert_recommendations(alert_id: str):
+    a = next((x for x in store.alerts if x.id == alert_id), None)
+    if not a:
+        raise HTTPException(404, "Alert not found")
+    return build_recommendations(a)
 
 
 class WhatIfRequest(BaseModel):

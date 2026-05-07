@@ -35,3 +35,4 @@ dist/
 # Env
 .env
 .env.local
+frontend/tsconfig.tsbuildinfo

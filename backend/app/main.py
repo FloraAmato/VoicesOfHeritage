@@ -16,7 +16,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router as api_router
-from app.api.websocket import telemetry_loop, ws_router
+from app.api.websocket import indices_alert_loop, telemetry_loop, ws_router
+from app.services.alerts import reload_rules
+from app.services.ml_pipeline import train_or_load_all
 from app.services.store import store
 
 
@@ -24,17 +26,21 @@ from app.services.store import store
 async def lifespan(app: FastAPI):
     # Bootstrap: genera storici, popola store, addestra modelli
     store.initialize(generate_history_days=90)
+    reload_rules()
+    train_or_load_all()
 
-    # Background task: streaming live
-    task = asyncio.create_task(telemetry_loop(tick_seconds=1.0, samples_per_tick=10))
+    # Background tasks: streaming live + valutazione periodica indici/alert
+    task1 = asyncio.create_task(telemetry_loop(tick_seconds=1.0, samples_per_tick=10))
+    task2 = asyncio.create_task(indices_alert_loop(tick_seconds=5.0))
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (task1, task2):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(

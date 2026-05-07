@@ -1,0 +1,106 @@
+# Regole di raccomandazione per il motore alert VoH.
+# Match: (environments, triggers, severities) — tutte AND.
+# Placeholder supportati: {manuscript_id}, {manuscript_name}, {environment_id},
+#                        {trigger_value}, {trigger_variable}.
+
+rules:
+  # ---------------- DEPOSITO SOTTERRANEO — picco RH (Scenario A) ------------
+  - id: deposito_picco_rh
+    environments: [deposito_sotterraneo]
+    triggers: [RH, RI_Muffa]
+    severities: [MEDIA, ALTA, CRITICA]
+    azioni_immediate:
+      - "Ispezione visiva del manoscritto {manuscript_id} ({manuscript_name}): ricerca foxing, macchie, odore di muffa"
+      - "Verifica funzionamento dei deumidificatori del deposito {environment_id}"
+      - "Controllo trappole entomologiche per Lepismatidae"
+    verifiche_tecniche:
+      - "Misurazione puntuale RH in 4 punti del deposito (angoli + parete contro-terra)"
+      - "Verifica temperatura e RH dei sistemi di climatizzazione (set-point e portate)"
+      - "Ispezione delle pareti contro-terra per presenza di umidità di risalita"
+    piano_medio_termine:
+      - "Valutare installazione barriera al vapore sulla parete nord"
+      - "Considerare incapsulamento di {manuscript_id} in scatola conservativa climaticamente passiva"
+      - "Ridondanza deumidificatori: aggiungere unità back-up con setpoint 55%"
+
+  # ---------------- SALA STORICA — oscillazioni T (Scenario B) --------------
+  - id: sala_oscillazioni_T
+    environments: [sala_storica_pt_soppalco]
+    triggers: [T, RI_Meccanico, dT_24h]
+    severities: [ALTA, CRITICA]
+    azioni_immediate:
+      - "Verifica HVAC immediata: portate, setpoint, eventuali guasti"
+      - "Riposizionamento di {manuscript_id} in zona con T più stabile (P.T.)"
+      - "Sospendere temporaneamente la ventilazione forzata se causa picchi"
+    verifiche_tecniche:
+      - "Calibrazione sensori di temperatura (P.T. + soppalco)"
+      - "Verifica tenuta serramenti e infiltrazioni d'aria"
+      - "Analisi delle ultime 72h di dati ambientali per identificare il pattern"
+    piano_medio_termine:
+      - "Audit completo del sistema HVAC con consulente esterno"
+      - "Pianificare sostituzione termostati a 2 punti con sistema multi-zona"
+      - "Riorganizzazione della distribuzione manufatti più fragili al P.T."
+
+  # ---------------- ARMADIO CHIUSO — saturazione VOC (Scenario C) -----------
+  - id: armadio_voc
+    environments: [armadio_chiuso]
+    triggers: [VOC, RI_Chimico]
+    severities: [MEDIA, ALTA, CRITICA]
+    azioni_immediate:
+      - "Apertura armadio e ventilazione 30 min/giorno per 7 giorni"
+      - "Rimuovere materiali sospetti (cartone non museale, contenitori plastici recenti)"
+      - "Ripetere misura VOC dopo 48h"
+    verifiche_tecniche:
+      - "Identificare la sorgente VOC (test on/off rimuovendo elementi sospetti uno alla volta)"
+      - "Verifica guarnizioni armadio: sigillatura ottimale è controproducente con VOC endogeni"
+    piano_medio_termine:
+      - "Installare scavengers di VOC (carbone attivo, zeoliti) all'interno dell'armadio"
+      - "Sostituire materiali interni con materiali certificati Oddy-passed"
+      - "Definire un protocollo di ricambio aria periodico (es. trimestrale)"
+
+  # ---------------- BIBLIOTECA — esposizione luminosa (Scenario D) ----------
+  - id: biblioteca_lux
+    environments: [biblioteca_consultazione]
+    triggers: [lux, RI_Fotodet., RI_Fotodeterioramento]
+    severities: [INFO, MEDIA, ALTA]
+    azioni_immediate:
+      - "Considerare rotazione di {manuscript_id} con un altro manufatto meno sensibile"
+      - "Ridurre apertura tendaggi nella zona del leggio"
+      - "Verifica filtri UV in posa"
+    verifiche_tecniche:
+      - "Misurazione UV (µW/lumen) sul leggio nelle ore di picco"
+      - "Audit della dose luminosa cumulata sul singolo manufatto (lux·h ultimi 30 gg)"
+      - "Controllo lampade LED: sostituire ad alta CRI e basso UV"
+    piano_medio_termine:
+      - "Installare filtri UV su finestre orientate sud/ovest"
+      - "Pianificare rotazione esposizione manufatti miniati (max 3 mesi/anno)"
+      - "Adozione protocollo di consultazione con luce dimmata e tempi limitati"
+
+  # ---------------- SALA STORICA — stratificazione (Scenario E) -------------
+  - id: sala_stratificazione
+    environments: [sala_storica_pt_soppalco]
+    triggers: [gradiente_verticale_T, T]
+    severities: [INFO, MEDIA]
+    azioni_immediate:
+      - "Verifica i manufatti del soppalco: registrare T effettiva al ripiano"
+      - "Considerare riposizionamento di {manuscript_id} dal soppalco al P.T."
+    verifiche_tecniche:
+      - "Misurazione T in 4 punti verticali della sala (pavimento, 1m, 2m, soppalco)"
+      - "Verifica ventilazione: bocchette e ricircolo aria"
+    piano_medio_termine:
+      - "Installare ventilazione attiva per ridurre stratificazione (>2.5 °C)"
+      - "Audit termografico della sala in stagione estiva e invernale"
+      - "Riorganizzazione della collezione: manufatti più fragili al P.T."
+
+  # ---------------- Regole generiche per RI elevato -------------------------
+  - id: ri_elevato_generico
+    severities: [CRITICA]
+    azioni_immediate:
+      - "Ispezione visiva immediata del manoscritto {manuscript_id}"
+      - "Notifica al responsabile della conservazione"
+      - "Predisporre documentazione fotografica dello stato corrente"
+    verifiche_tecniche:
+      - "Audit completo dei parametri ambientali ultime 72h"
+      - "Verifica calibrazione sensori artunified"
+    piano_medio_termine:
+      - "Richiesta di sopralluogo conservatore esterno"
+      - "Valutare trasferimento temporaneo del manufatto in ambiente controllato"
