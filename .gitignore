@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# ML artifacts
+backend/models/*.pkl
+backend/data/*.parquet
+backend/data/*.csv
+backend/data/*.sqlite
+backend/data/*.db
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+.cache/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.local

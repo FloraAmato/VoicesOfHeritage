@@ -1,0 +1,35 @@
+[project]
+name = "voh-backend"
+version = "0.1.0"
+description = "VoH — Voices of Heritage — Preventive conservation backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.4",
+    "sqlalchemy>=2.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+    "python-multipart>=0.0.9",
+    "joblib>=1.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.3", "black>=24.0", "httpx>=0.27"]
+ml-heavy = ["tensorflow>=2.15"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
